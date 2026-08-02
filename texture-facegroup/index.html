@@ -1,12 +1,160 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Texture Facegroup</title><link rel="stylesheet" href="styles.css?v=0.6.1"></head><body><div class="app">
-<header><div class="brand"><div class="logo">TF</div><div><div class="title">Texture Facegroup</div><div class="subtitle">Automatic character-head facegroups from albedo</div></div></div><div class="toolbar"><button id="openGlbBtn">Open GLB</button><button id="openTextureBtn">Load Albedo</button><button id="frameBtn" disabled>Frame</button><button id="generateBtn" class="primary" disabled>Auto Classify Head</button><button id="exportBtn" disabled>Export GLB</button></div><input id="glbInput" type="file" accept=".glb,model/gltf-binary,application/octet-stream" hidden><input id="textureInput" type="file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" hidden></header>
-<main><aside class="panel left">
-<section><h3>Import</h3><div id="dropZone" class="dropzone"><strong>Drop a GLB here</strong><span>Requires UVs and an embedded or replacement albedo.</span></div><div class="meta" id="textureMeta">No model loaded.</div></section>
-<section><h3>Head Orientation</h3><label class="field"><span>Up axis</span><select id="upAxis"><option value="y" selected>Y up</option><option value="z">Z up</option></select></label><label class="check"><input id="autoFront" type="checkbox" checked> Automatically detect front direction</label><label class="field"><span>Manual front</span><select id="frontAxis"><option value="z+" selected>+Z</option><option value="z-">−Z</option><option value="x+">+X</option><option value="x-">−X</option></select></label><div class="meta">Automatic mode tests all four horizontal directions and scores the expected face, eye, lip and hair layout.</div></section>
-<section><h3>Automatic Detection</h3><label class="field"><span>Feature sensitivity</span><select id="featureSensitivity"><option value="0.75">Conservative</option><option value="1" selected>Balanced</option><option value="1.3">Detailed</option></select></label><label class="field"><span>Eye-zone width</span><input id="eyeWidth" type="number" min="60" max="160" value="105"></label><label class="field"><span>Eye-zone height</span><input id="eyeHeight" type="number" min="60" max="160" value="105"></label><label class="field"><span>Lip-zone size</span><input id="lipScale" type="number" min="60" max="180" value="110"></label><label class="field"><span>Hair colour tolerance</span><input id="hairTolerance" type="number" min="5" max="80" value="24"></label><label class="field"><span>Skin colour tolerance</span><input id="skinTolerance" type="number" min="5" max="80" value="34"></label><label class="field"><span>Semantic smoothing</span><input id="semanticPasses" type="number" min="0" max="12" value="2"></label><label class="check"><input id="separateEyes" type="checkbox"> Split eye white / iris / pupil</label></section>
-<section><h3>Preview</h3><label class="field"><span>Display</span><select id="previewMode"><option value="semantic" selected>Automatic semantic groups</option><option value="confidence">Detection confidence</option><option value="original">Original model</option></select></label><label class="check"><input id="gridToggle" type="checkbox" checked> Grid</label></section>
-<section><h3>Stats</h3><div class="stats"><div class="stat"><b id="trianglesStat">0</b><span>Triangles</span></div><div class="stat"><b id="groupsStat">0</b><span>Final groups</span></div><div class="stat"><b id="classifiedStat">0%</b><span>Classified</span></div><div class="stat"><b id="meshesStat">0</b><span>Mesh parts</span></div></div></section>
-</aside><section class="viewportWrap"><div id="viewport"></div><div class="overlay topLeft" id="meshName">No mesh loaded</div><div class="overlay topRight" id="statusPill">Ready</div></section>
-<aside class="panel right"><section><h3>Detected Groups</h3><div id="groupList" class="groupList"><div class="empty">Load a model and run automatic classification.</div></div></section><section><h3>Orientation Scores</h3><div id="orientationScores" class="groupList"><div class="empty">Scores appear after classification.</div></div></section><section><h3>Detection Notes</h3><div id="detectionNotes" class="meta">The classifier uses front-surface sampling, albedo colour, bilateral feature zones and expected material proportions.</div></section></aside>
-</main><footer><div id="status">Ready — load a UV-mapped character-head GLB.</div><div>Texture Facegroup v0.6.1</div></footer></div>
-<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"}}</script><script type="module" src="app.js?v=0.6.1"></script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Texture Facegroup — Quantised</title>
+  <link rel="stylesheet" href="styles.css?v=0.7.0">
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand">
+        <div class="logo">TF</div>
+        <div>
+          <div class="title">Texture Facegroup</div>
+          <div class="subtitle">Quantise albedo → map palette indices to facegroups</div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button id="openGlbBtn">Open GLB</button>
+        <button id="openTextureBtn">Load Albedo</button>
+        <button id="frameBtn" disabled>Frame</button>
+        <button id="quantiseBtn" class="primary" disabled>Quantise + Build Facegroups</button>
+        <button id="exportGlbBtn" disabled>Export GLB</button>
+        <button id="exportPngBtn" disabled>Export Quantised PNG</button>
+      </div>
+      <input id="glbInput" type="file" accept=".glb,model/gltf-binary,application/octet-stream" hidden>
+      <input id="textureInput" type="file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" hidden>
+    </header>
+
+    <main>
+      <aside class="panel left">
+        <section>
+          <h3>Import</h3>
+          <div id="dropZone" class="dropzone">
+            <strong>Drop a GLB here</strong>
+            <span>Uses embedded albedo if present. You can also load a replacement albedo image.</span>
+          </div>
+          <div id="textureMeta" class="meta">No model loaded.</div>
+        </section>
+
+        <section>
+          <h3>Quantisation</h3>
+          <label class="field">
+            <span>Palette size</span>
+            <select id="paletteSize">
+              <option value="4">4</option>
+              <option value="6">6</option>
+              <option value="8">8</option>
+              <option value="12" selected>12</option>
+              <option value="16">16</option>
+              <option value="20">20</option>
+              <option value="24">24</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Method</span>
+            <select id="quantMethod">
+              <option value="medianCut" selected>Median cut</option>
+              <option value="kmeans">K-means (fallbacks to median cut)</option>
+              <option value="octree">Octree (fallbacks to median cut)</option>
+            </select>
+          </label>
+          <label class="check"><input id="preserveNeutrals" type="checkbox" checked> Preserve black / white / grey</label>
+          <label class="check"><input id="ditherOff" type="checkbox" checked disabled> Dither off</label>
+        </section>
+
+        <section>
+          <h3>Face Assignment</h3>
+          <label class="field">
+            <span>Samples / triangle</span>
+            <select id="sampleCount">
+              <option value="1">1</option>
+              <option value="4">4</option>
+              <option value="7" selected>7</option>
+              <option value="13">13</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Decision</span>
+            <select id="decisionMode">
+              <option value="centre">Centre sample</option>
+              <option value="majority" selected>Majority vote</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Group mode</span>
+            <select id="groupMode">
+              <option value="palette" selected>Palette groups only</option>
+              <option value="islands">Palette + connected islands</option>
+            </select>
+          </label>
+          <label class="check"><input id="cleanupIslands" type="checkbox" checked> Merge tiny islands</label>
+          <label class="field">
+            <span>Minimum island size</span>
+            <input id="minIslandSize" type="number" min="1" value="5">
+          </label>
+        </section>
+
+        <section>
+          <h3>Preview</h3>
+          <label class="field">
+            <span>Display</span>
+            <select id="previewMode">
+              <option value="original">Original texture</option>
+              <option value="quantisedTexture">Quantised texture</option>
+              <option value="paletteModel" selected>Palette colours on model</option>
+              <option value="randomGroups">Random facegroups</option>
+            </select>
+          </label>
+          <label class="check"><input id="gridToggle" type="checkbox" checked> Grid</label>
+          <label class="check"><input id="wireToggle" type="checkbox"> Wireframe</label>
+        </section>
+
+        <section>
+          <h3>Stats</h3>
+          <div class="stats">
+            <div class="stat"><b id="trianglesStat">0</b><span>Triangles</span></div>
+            <div class="stat"><b id="groupsStat">0</b><span>Facegroups</span></div>
+            <div class="stat"><b id="paletteStat">0</b><span>Palette colours</span></div>
+            <div class="stat"><b id="meshPartsStat">0</b><span>Mesh parts</span></div>
+          </div>
+        </section>
+      </aside>
+
+      <section class="viewportWrap">
+        <div id="viewport"></div>
+        <div id="meshName" class="overlay topLeft">No model loaded</div>
+        <div id="statusPill" class="overlay topRight">Ready</div>
+      </section>
+
+      <aside class="panel right">
+        <section>
+          <h3>Palette</h3>
+          <div id="paletteList" class="paletteList"><div class="empty">Quantise the texture to see palette colours.</div></div>
+        </section>
+        <section>
+          <h3>Quantised Texture</h3>
+          <canvas id="texturePreview" width="256" height="256"></canvas>
+        </section>
+      </aside>
+    </main>
+
+    <footer>
+      <div id="status">Ready — load a textured GLB.</div>
+      <div>Texture Facegroup Quantised v0.7.0</div>
+    </footer>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="app.js?v=0.7.0"></script>
+</body>
+</html>
