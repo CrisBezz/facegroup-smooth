@@ -64,11 +64,19 @@ export function islands(part,labels){
 function groupGraph(part,groups){
   const faceGroup=new Int32Array(part.faceCount);groups.forEach((g,i)=>g.faces.forEach(f=>faceGroup[f]=i));
   const boundaries=Array.from({length:groups.length},()=>new Map());
-  for(let f=0;f<part.faceCount;f++)for(const n of part.adjacency[f]){
-    if(n<f)continue;const a=faceGroup[f],b=faceGroup[n];if(a===b)continue;
-    boundaries[a].set(b,(boundaries[a].get(b)||0)+1);boundaries[b].set(a,(boundaries[b].get(a)||0)+1);
+  const perimeters=new Uint32Array(groups.length);
+  for(let f=0;f<part.faceCount;f++){
+    const gf=faceGroup[f];
+    for(const n of part.adjacency[f]){
+      const gn=faceGroup[n];
+      if(gf===gn)continue;
+      perimeters[gf]++;
+      if(n<f)continue;
+      boundaries[gf].set(gn,(boundaries[gf].get(gn)||0)+1);
+      boundaries[gn].set(gf,(boundaries[gn].get(gf)||0)+1);
+    }
   }
-  return {faceGroup,boundaries};
+  return {faceGroup,boundaries,perimeters};
 }
 
 export function cleanup(part,labels,palette,minSize,passes){
@@ -86,82 +94,50 @@ export function cleanup(part,labels,palette,minSize,passes){
 }
 
 export function reduceRegions(part,labels,palette,options={}){
-  const target=Math.max(1,options.target??120);
-  const rounds=Math.max(4,options.passes??24);
-  const initialMaxColour=Math.max(0,options.maxColour??70);
-  const preferBelow=Math.max(1,options.preferBelow??1200);
+  const softTarget=Math.max(1,options.target??500);
+  const rounds=Math.max(1,options.passes??20);
+  const maxColour=Math.max(0,options.maxColour??38);
+  const forceBelow=Math.max(1,options.preferBelow??180);
   const protect=options.protect!==false;
-  const protectSize=Math.max(1,options.protectSize??500);
-  const protectContrast=Math.max(0,options.protectContrast??80);
-  let groups=islands(part,labels), merges=0, stalled=0;
+  const protectSize=Math.max(1,options.protectSize??350);
+  const protectContrast=Math.max(0,options.protectContrast??60);
+  const minBoundaryRatio=Math.min(.95,Math.max(.05,options.minBoundaryRatio??.55));
+  let groups=islands(part,labels),merges=0;
 
-  for(let round=0;round<rounds&&groups.length>target;round++){
-    const progress=round/Math.max(1,rounds-1);
-    const maxColour=initialMaxColour+(255-initialMaxColour)*Math.pow(progress,1.35);
-    const sizeLimit=preferBelow*Math.pow(1+progress*3,2);
-    const detailProtection=protect&&progress<0.58;
-    const {boundaries}=groupGraph(part,groups);
-    const claimed=new Uint8Array(groups.length);
+  for(let round=0;round<rounds&&groups.length>softTarget;round++){
+    const {boundaries,perimeters}=groupGraph(part,groups);
     const proposals=[];
+    const claimed=new Uint8Array(groups.length);
     const order=groups.map((g,i)=>({g,i})).sort((a,b)=>a.g.faces.length-b.g.faces.length);
 
     for(const {g,i} of order){
-      if(groups.length-proposals.length<=target)break;
+      if(groups.length-proposals.length<=softTarget)break;
       if(claimed[i]||!boundaries[i].size)continue;
-      if(g.faces.length>sizeLimit&&progress<.75)continue;
-
-      let strongestContrast=0;
-      boundaries[i].forEach((_,t)=>{strongestContrast=Math.max(strongestContrast,colourDistance(palette[g.paletteIndex],palette[groups[t].paletteIndex]));});
-      if(detailProtection&&g.faces.length<=protectSize&&strongestContrast>=protectContrast)continue;
-
-      let best=-1,bestScore=-Infinity;
+      let best=-1,bestScore=-Infinity,bestRatio=0,bestDistance=Infinity;
       boundaries[i].forEach((shared,t)=>{
         if(claimed[t])return;
         const d=colourDistance(palette[g.paletteIndex],palette[groups[t].paletteIndex]);
-        if(d>maxColour&&progress<.88)return;
-        const sharedRatio=shared/Math.max(1,Math.sqrt(g.faces.length));
-        const sizeBias=Math.log1p(groups[t].faces.length);
-        const samePalette=g.paletteIndex===groups[t].paletteIndex?120:0;
-        const score=sharedRatio*1100+sizeBias*7+samePalette-d*(7-4*progress);
-        if(score>bestScore){bestScore=score;best=t;}
+        const ratio=shared/Math.max(1,perimeters[i]);
+        const samePalette=g.paletteIndex===groups[t].paletteIndex;
+        const safeColour=d<=maxColour;
+        const safeBoundary=ratio>=minBoundaryRatio;
+        const tiny=g.faces.length<=forceBelow;
+        if(!samePalette && !(safeColour&&(safeBoundary||tiny)))return;
+        const score=(samePalette?220:0)+ratio*1000-d*9+Math.log1p(groups[t].faces.length)*4;
+        if(score>bestScore){bestScore=score;best=t;bestRatio=ratio;bestDistance=d;}
       });
-      if(best>=0){claimed[i]=1;proposals.push([i,best]);}
+      if(best<0)continue;
+      if(protect&&g.faces.length<=protectSize&&bestDistance>=protectContrast&&bestRatio<.82)continue;
+      claimed[i]=1;proposals.push([i,best]);
     }
 
-    if(!proposals.length){
-      stalled++;
-      if(stalled>2)break;
-      continue;
-    }
-    stalled=0;
-    const maxBatch=Math.max(1,Math.min(proposals.length,Math.ceil((groups.length-target)*Math.min(.42,.18+progress*.3))));
-    for(let k=0;k<maxBatch;k++){
-      const [source,targetGroup]=proposals[k];
-      const newPalette=groups[targetGroup].paletteIndex;
+    if(!proposals.length)break;
+    for(const [source,target] of proposals){
+      const newPalette=groups[target].paletteIndex;
       groups[source].faces.forEach(f=>labels[f]=newPalette);
       merges++;
     }
     groups=islands(part,labels);
   }
-
-  if(groups.length>target){
-    for(let emergency=0;emergency<8&&groups.length>target;emergency++){
-      const {boundaries}=groupGraph(part,groups);
-      const order=groups.map((g,i)=>({g,i})).sort((a,b)=>a.g.faces.length-b.g.faces.length);
-      let changed=0;
-      for(const {g,i} of order){
-        if(groups.length-changed<=target)break;
-        let best=-1,bestScore=-Infinity;
-        boundaries[i].forEach((shared,t)=>{
-          const d=colourDistance(palette[g.paletteIndex],palette[groups[t].paletteIndex]);
-          const score=shared*1500+Math.log1p(groups[t].faces.length)*8-d*2;
-          if(score>bestScore){bestScore=score;best=t;}
-        });
-        if(best>=0){g.faces.forEach(f=>labels[f]=groups[best].paletteIndex);changed++;merges++;}
-      }
-      if(!changed)break;
-      groups=islands(part,labels);
-    }
-  }
-  return {groups,merges};
+  return {groups,merges,reachedTarget:groups.length<=softTarget};
 }
