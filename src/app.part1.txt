@@ -1,0 +1,121 @@
+
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js';
+import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/controls/OrbitControls.js';
+import { OBJLoader } from 'https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/loaders/OBJLoader.js';
+import { STLLoader } from 'https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/loaders/STLLoader.js';
+import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/loaders/GLTFLoader.js';
+import { GLTFExporter } from 'https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/exporters/GLTFExporter.js';
+import { mergeGeometries } from 'https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/utils/BufferGeometryUtils.js';
+window.__FGS_READY__ = true;
+
+const $ = id => document.getElementById(id);
+const state = {
+  sourceName:'', baseGeometry:null, renderGeometry:null, mesh:null, root:null,
+  groups:[], triGroups:[], selected:-1, isolated:-1, hardEdges:0,
+  weldedBefore:0,weldedAfter:0,weldTolerance:1e-6
+};
+
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true, preserveDrawingBuffer:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1;
+$('viewport').appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45,1,.001,100000);
+camera.position.set(3,2.3,4);
+const controls = new OrbitControls(camera,renderer.domElement);
+controls.enableDamping=true; controls.dampingFactor=.08;
+controls.screenSpacePanning=true;
+
+scene.add(new THREE.HemisphereLight(0xe4f3ff,0x24303b,1.5));
+const key = new THREE.DirectionalLight(0xffffff,2.1); key.position.set(4,7,5); scene.add(key);
+const rim = new THREE.DirectionalLight(0x9ccfff,1.1); rim.position.set(-5,2,-3); scene.add(rim);
+const grid = new THREE.GridHelper(20,40,0x4c5b69,0x2b333d); scene.add(grid);
+
+let wireObj=null, edgeObj=null;
+const raycaster=new THREE.Raycaster(), pointer=new THREE.Vector2();
+
+function resize(){
+  const r=$('viewport').getBoundingClientRect();
+  renderer.setSize(r.width,r.height,false);
+  camera.aspect=r.width/r.height; camera.updateProjectionMatrix();
+}
+addEventListener('resize',resize); resize();
+
+function animate(){
+  requestAnimationFrame(animate); controls.update(); renderer.render(scene,camera);
+}
+animate();
+
+function status(s){$('status').textContent=s}
+function colorFor(i){
+  const c=new THREE.Color(); c.setHSL((i*.61803398875)%1,.55,.58); return '#'+c.getHexString();
+}
+function defaultGroup(i,name,start,count){
+  return {id:i,name:name||`Group ${i+1}`,start,count,mode:'smooth',angle:45,
+    hardBoundary:true,visible:true,color:colorFor(i)};
+}
+
+function clearMesh(){
+  if(state.root) scene.remove(state.root);
+  if(wireObj) scene.remove(wireObj);
+  if(edgeObj) scene.remove(edgeObj);
+  state.root=new THREE.Group(); scene.add(state.root);
+  state.mesh=null; wireObj=edgeObj=null;
+}
+
+function ensureIndexed(g){
+  if(g.index) return g.clone();
+  const count=g.getAttribute('position').count;
+  const arr=count>65535?new Uint32Array(count):new Uint16Array(count);
+  for(let i=0;i<count;i++) arr[i]=i;
+  const c=g.clone(); c.setIndex(new THREE.BufferAttribute(arr,1)); return c;
+}
+
+function normalizeMergeAttributes(geometries){
+  const names=new Set();
+  for(const g of geometries)for(const name of Object.keys(g.attributes))names.add(name);
+  for(const g of geometries){
+    const count=g.getAttribute('position').count;
+    for(const name of names){
+      if(g.getAttribute(name))continue;
+      if(name==='color'){const a=new Float32Array(count*3);a.fill(1);g.setAttribute('color',new THREE.BufferAttribute(a,3));}
+      else if(name==='uv')g.setAttribute('uv',new THREE.BufferAttribute(new Float32Array(count*2),2));
+      else if(name==='normal')g.computeVertexNormals();
+    }
+  }
+}
+
+function weldGeometry(source,tolerance=1e-6){
+  const g=ensureIndexed(source),position=g.getAttribute('position'),index=g.index.array;
+  const inv=1/Math.max(tolerance,1e-12),lookup=new Map(),positions=[],remap=new Uint32Array(position.count);
+  for(let i=0;i<position.count;i++){
+    const x=position.getX(i),y=position.getY(i),z=position.getZ(i);
+    const key=`${Math.round(x*inv)},${Math.round(y*inv)},${Math.round(z*inv)}`;
+    let next=lookup.get(key);
+    if(next===undefined){next=positions.length/3;lookup.set(key,next);positions.push(x,y,z);}
+    remap[i]=next;
+  }
+  const out=new THREE.BufferGeometry();
+  out.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
+  const IndexType=positions.length/3>65535?Uint32Array:Uint16Array,newIndex=new IndexType(index.length);
+  for(let i=0;i<index.length;i++)newIndex[i]=remap[index[i]];
+  out.setIndex(new THREE.BufferAttribute(newIndex,1));
+  const color=g.getAttribute('color');
+  if(color){
+    const sums=new Float32Array((positions.length/3)*3),counts=new Uint32Array(positions.length/3);
+    for(let i=0;i<position.count;i++){const n=remap[i];sums[n*3]+=color.getX(i);sums[n*3+1]+=color.getY(i);sums[n*3+2]+=color.getZ(i);counts[n]++;}
+    for(let i=0;i<counts.length;i++){const c=counts[i]||1;sums[i*3]/=c;sums[i*3+1]/=c;sums[i*3+2]/=c;}
+    out.setAttribute('color',new THREE.BufferAttribute(sums,3));
+  }
+  return out;
+}
+
+function flattenObject(root){
+  root.updateMatrixWorld(true);
+  const geometries=[], groupDefs=[];
+  let triOffset=0, groupIndex=0;
+  root.traverse(o=>{
+    if(!o.isMesh || !
