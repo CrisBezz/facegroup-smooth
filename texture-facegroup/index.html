@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>Texture Facegroup</title>
-  <link rel="stylesheet" href="styles.css?v=0.1.0">
+  <link rel="stylesheet" href="styles.css?v=0.2.0">
 </head>
 <body>
   <div class="app">
@@ -50,7 +50,9 @@
               <option value="material">Material colours</option>
             </select>
           </label>
-          <div class="meta" id="textureMeta">No texture loaded.</div>
+          <div class="meta" id="textureMeta">
+            No texture loaded.
+          </div>
         </section>
 
         <section>
@@ -70,6 +72,33 @@
               <option value="bilinear" selected>Bilinear</option>
             </select>
           </label>
+        </section>
+
+        <section>
+          <h3>Colour Simplification</h3>
+          <label class="check"><input id="simplifyColours" type="checkbox" checked> Simplify albedo colours</label>
+          <label class="field">
+            <span>Colour families</span>
+            <select id="colourFamilies">
+              <option value="4">4 — Very broad</option>
+              <option value="6">6 — Broad</option>
+              <option value="8" selected>8 — Balanced</option>
+              <option value="12">12 — Detailed</option>
+              <option value="18">18 — Fine</option>
+              <option value="24">24 — Very fine</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Tone levels</span>
+            <select id="toneLevels">
+              <option value="1">1 — Flat colour</option>
+              <option value="2" selected>2 — Light / dark</option>
+              <option value="3">3 — Low / mid / high</option>
+              <option value="5">5 — Preserve shading</option>
+            </select>
+          </label>
+          <label class="check"><input id="protectNeutrals" type="checkbox" checked> Preserve black, white and grey</label>
+          <div class="meta">Snaps similar hues into a reduced palette before facegroup generation. For example, crimson, scarlet and brick red can all become one red family.</div>
         </section>
 
         <section>
@@ -137,7 +166,7 @@
 
     <footer>
       <div id="status">Ready — choose a GLB with UVs and an albedo texture.</div>
-      <div>Texture Facegroup v0.1.0</div>
+      <div>Texture Facegroup v0.2.0</div>
     </footer>
   </div>
 
@@ -149,6 +178,6 @@
     }
   }
   </script>
-  <script type="module" src="app.js?v=0.1.0"></script>
+  <script type="module" src="app.js?v=0.2.0"></script>
 </body>
 </html>
