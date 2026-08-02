@@ -1,0 +1,112 @@
+oupStarts=[];
+  let outTri=0;
+  for(let gi=0;gi<state.groups.length;gi++){
+    const gr=state.groups[gi]; if(!gr.visible || (state.isolated>=0 && gi!==state.isolated)) continue;
+    groupStarts.push({gi,start:outIndex.length});
+    const groupCol=new THREE.Color(gr.color);
+    for(let t=0;t<triCount;t++){
+      if(state.triGroups[t]!==gi) continue;
+      for(const vi of faceVerts[t]){
+        const reached=new Set([t]), stack=[t];
+        while(stack.length){
+          const f=stack.pop();
+          for(const n of smoothAdj[f]){
+            if(reached.has(n)) continue;
+            if(faceVerts[n].includes(vi)){reached.add(n);stack.push(n)}
+          }
+        }
+        const nrm=new THREE.Vector3();
+        for(const f of reached)nrm.add(faceNormals[f]);
+        nrm.normalize();
+        const v=new THREE.Vector3().fromBufferAttribute(pos,vi);
+        outPos.push(v.x,v.y,v.z);outNorm.push(nrm.x,nrm.y,nrm.z);
+        if(sourceColor){outColor.push(sourceColor.getX(vi),sourceColor.getY(vi),sourceColor.getZ(vi));}
+        else outColor.push(1,1,1);
+        outIndex.push(outIndex.length);
+      }
+      outTri++;
+    }
+    groupStarts[groupStarts.length-1].count=outIndex.length-groupStarts[groupStarts.length-1].start;
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(outPos,3));
+  g.setAttribute('normal',new THREE.Float32BufferAttribute(outNorm,3));
+  g.setAttribute('color',new THREE.Float32BufferAttribute(outColor,3));
+  g.setIndex(outIndex);
+  g.computeBoundingBox();g.computeBoundingSphere();
+  g.clearGroups(); for(const gs of groupStarts)g.addGroup(gs.start,gs.count,gs.gi);
+  state.renderGeometry=g;
+
+  clearMesh();
+  const hasOriginalColor=!!src.getAttribute('color');
+  const materials=state.groups.map(gr=>new THREE.MeshStandardMaterial({
+    color:$('groupsColor').checked?gr.color:0xffffff,
+    roughness:.64,metalness:.05,vertexColors:!$('groupsColor').checked&&hasOriginalColor,
+    side:THREE.DoubleSide
+  }));
+  state.mesh=new THREE.Mesh(g,materials); state.mesh.name=state.sourceName;
+  state.root.add(state.mesh);
+
+  if($('wire').checked){
+    wireObj=new THREE.LineSegments(new THREE.WireframeGeometry(g),new THREE.LineBasicMaterial({color:0x111111,transparent:true,opacity:.32}));
+    state.root.add(wireObj);
+  }
+  if($('edges').checked){
+    edgeObj=makeHardEdgeOverlay(src,faceNormals,edgeMap);
+    state.root.add(edgeObj);
+  }
+  updateStats();updateGroupList();updateEditor();
+  $('applyBtn').disabled=false;$('exportObjBtn').disabled=false;$('exportGlbBtn').disabled=false;
+  $('frameBtn').disabled=false;$('saveProjectBtn').disabled=false;$('recenterBtn').disabled=false;$('flipBtn').disabled=false;
+  $('allSmooth').disabled=$('allFlat').disabled=$('allAuto').disabled=false;
+  status(`Shading rebuilt • ${hardEdges.toLocaleString()} hard edges`);
+}
+
+function makeHardEdgeOverlay(src,faceNormals,edgeMap){
+  const pos=src.getAttribute('position'); const pts=[];
+  for(const [k,faces] of edgeMap){
+    let hard=faces.length!==2;
+    if(faces.length===2){
+      const [a,b]=faces,ga=state.groups[state.triGroups[a]],gb=state.groups[state.triGroups[b]];
+      const same=state.triGroups[a]===state.triGroups[b];
+      const angle=THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(faceNormals[a].dot(faceNormals[b]),-1,1)));
+      hard=!same&&$('globalHard').checked&&(ga.hardBoundary||gb.hardBoundary);
+      if(same) hard=ga.mode==='flat'||(ga.mode==='auto'&&angle>ga.angle);
+    }
+    if(hard){
+      const [a,b]=k.split('|').map(Number);
+      const va=new THREE.Vector3().fromBufferAttribute(pos,a),vb=new THREE.Vector3().fromBufferAttribute(pos,b);
+      pts.push(va.x,va.y,va.z,vb.x,vb.y,vb.z);
+    }
+  }
+  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pts,3));
+  return new THREE.LineSegments(g,new THREE.LineBasicMaterial({color:0xffb24a,transparent:true,opacity:.9,depthTest:false}));
+}
+
+function frameMesh(){
+  if(!state.renderGeometry)return;
+  state.renderGeometry.computeBoundingBox();
+  const box=state.renderGeometry.boundingBox, center=box.getCenter(new THREE.Vector3()), size=box.getSize(new THREE.Vector3()).length();
+  controls.target.copy(center); camera.near=Math.max(size/10000,.0001);camera.far=Math.max(size*100,100);
+  camera.position.copy(center).add(new THREE.Vector3(size*.7,size*.45,size*.75));
+  camera.updateProjectionMatrix();controls.update();
+  grid.position.y=box.min.y;
+  grid.scale.setScalar(Math.max(size/20,.1));
+}
+
+function updateStats(){
+  if(!state.renderGeometry)return;
+  $('verts').textContent=state.renderGeometry.getAttribute('position').count.toLocaleString();
+  $('faces').textContent=(state.renderGeometry.index.count/3).toLocaleString();
+  $('groupCount').textContent=state.groups.length;
+  $('hardCount').textContent=state.hardEdges.toLocaleString();
+  $('meshName').textContent=state.sourceName;
+}
+function updateUI(){updateStats();updateGroupList();updateEditor()}
+function updateGroupList(){
+  if(!state.groups.length){$('groupList').innerHTML='<div class="empty">Load a mesh to inspect its facegroups.</div>';return}
+  $('groupList').innerHTML='';
+  state.groups.forEach((g,i)=>{
+    const el=document.createElement('div');el.className='group'+(i===state.selected?' selected':'');
+    el.innerHTML=`<div class="group-head"><div class="swatch" style="background:${g.color}"></div>
+      <div><div class="gname">${escapeHtml(g.name)}</div><div class="gmeta">${g.count.toLocaleString()} triangles</d
