@@ -1,44 +1,550 @@
 import * as THREE from 'three';
-import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
-import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
-import {GLTFExporter} from 'three/addons/exporters/GLTFExporter.js';
-const $=id=>document.getElementById(id),viewport=$('viewport');
-const scene=new THREE.Scene();scene.background=new THREE.Color(0x111820);
-const camera=new THREE.PerspectiveCamera(45,1,.01,10000);camera.position.set(3,2,4);
-const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});renderer.setPixelRatio(Math.min(devicePixelRatio||1,2));renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;viewport.appendChild(renderer.domElement);
-const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;
-scene.add(new THREE.HemisphereLight(0xffffff,0x334455,2.2));const sun=new THREE.DirectionalLight(0xffffff,2.6);sun.position.set(4,8,6);scene.add(sun);const grid=new THREE.GridHelper(20,40,0x536272,0x2b3540);scene.add(grid);
-const BASE=[{key:'skin',name:'Skin',colour:0xe3aa91},{key:'hair',name:'Hair',colour:0x513229},{key:'lips',name:'Lips',colour:0xc75672},{key:'eyes',name:'Eyes',colour:0x7fa2bd},{key:'brows',name:'Brows / Lashes',colour:0x302521},{key:'other',name:'Other',colour:0x909aa3}];
-const EYES=[{key:'sclera',name:'Eye White',colour:0xd8e1e5},{key:'iris',name:'Iris',colour:0x6689a3},{key:'pupil',name:'Pupil',colour:0x171b20}];
-const app={root:null,name:'model.glb',parts:[],uploaded:null,groups:[],classified:0,orientation:[],chosen:null};
-function status(t){$('status').textContent=t;$('statusPill').textContent=t}
-function resize(){const b=viewport.getBoundingClientRect();if(!b.width)return;camera.aspect=b.width/b.height;camera.updateProjectionMatrix();renderer.setSize(b.width,b.height,false)}new ResizeObserver(resize).observe(viewport);resize();(function loop(){requestAnimationFrame(loop);controls.update();renderer.render(scene,camera)})();
-const lin=x=>x<=.04045?x/12.92:((x+.055)/1.055)**2.4;
-function lab(c){let[r,g,b]=c,x=(r*.4124+g*.3576+b*.1805)/.95047,y=r*.2126+g*.7152+b*.0722,z=(r*.0193+g*.1192+b*.9505)/1.08883,f=t=>t>.008856?Math.cbrt(t):7.787*t+16/116;x=f(x);y=f(y);z=f(z);return[116*y-16,500*(x-y),200*(y-z)]}
-function de(a,b){const A=lab(a),B=lab(b);return Math.hypot(A[0]-B[0],A[1]-B[1],A[2]-B[2])}
-function lum(c){return .2126*c[0]+.7152*c[1]+.0722*c[2]}
-function median(list,fallback=[.55,.38,.3]){if(!list.length)return fallback.slice();return[0,1,2].map(k=>{const a=list.map(c=>c[k]).sort((x,y)=>x-y);return a[Math.floor(a.length/2)]})}
-function textureData(image){const c=document.createElement('canvas'),x=c.getContext('2d',{willReadFrequently:true});c.width=image.width;c.height=image.height;x.drawImage(image,0,0);return{w:c.width,h:c.height,d:x.getImageData(0,0,c.width,c.height).data}}
-function sample(t,u,v){u=((u%1)+1)%1;v=((v%1)+1)%1;const x=Math.round(u*(t.w-1)),y=Math.round((1-v)*(t.h-1)),i=(y*t.w+x)*4;return[lin(t.d[i]/255),lin(t.d[i+1]/255),lin(t.d[i+2]/255)]}
-function adjacency(pos){const n=pos.count/3,m=new Map(),a=Array.from({length:n},()=>new Set()),key=i=>`${Math.round(pos.getX(i)*1e5)},${Math.round(pos.getY(i)*1e5)},${Math.round(pos.getZ(i)*1e5)}`;for(let f=0;f<n;f++){const v=[key(f*3),key(f*3+1),key(f*3+2)];for(const[i,j]of[[0,1],[1,2],[2,0]]){const e=v[i]<v[j]?v[i]+'|'+v[j]:v[j]+'|'+v[i];if(!m.has(e))m.set(e,[]);m.get(e).push(f)}}for(const fs of m.values())for(let i=0;i<fs.length;i++)for(let j=i+1;j<fs.length;j++)a[fs[i]].add(fs[j]),a[fs[j]].add(fs[i]);return a}
-function material(c){return new THREE.MeshStandardMaterial({color:c instanceof THREE.Color?c:new THREE.Color(c),roughness:.72,side:THREE.DoubleSide})}
-async function prepare(mesh){const original=mesh.material,g=mesh.geometry.index?mesh.geometry.toNonIndexed():mesh.geometry.clone();g.computeVertexNormals();mesh.geometry=g;const mats=Array.isArray(original)?original:[original],map=mats.find(m=>m?.map)?.map,tex=map?.image?textureData(map.image):null;return{mesh,original,pos:g.attributes.position,norm:g.attributes.normal,uv:g.attributes.uv,faceCount:g.attributes.position.count/3,adj:adjacency(g.attributes.position),tex,colours:[],centres:[],labels:null,confidence:null,materials:[]}}
-function clear(){if(app.root)scene.remove(app.root);app.root=null;app.parts=[];app.groups=[];app.classified=0;app.orientation=[];app.chosen=null;$('meshName').textContent='No mesh loaded';$('textureMeta').textContent='No model loaded.';renderList();stats()}
-function frame(){if(!app.root)return;const b=new THREE.Box3().setFromObject(app.root),s=b.getSize(new THREE.Vector3()),m=b.getCenter(new THREE.Vector3()),d=Math.max(s.x,s.y,s.z)||1;controls.target.copy(m);camera.position.copy(m).add(new THREE.Vector3(d*1.5,d*.9,d*1.5));camera.near=Math.max(d/1000,.001);camera.far=d*1000;camera.updateProjectionMatrix()}
-function stats(){const tris=app.parts.reduce((n,p)=>n+p.faceCount,0);$('trianglesStat').textContent=tris.toLocaleString();$('groupsStat').textContent=app.groups.length;$('classifiedStat').textContent=Math.round(app.classified*100)+'%';$('meshesStat').textContent=app.parts.length;for(const id of['frameBtn','generateBtn'])$(id).disabled=!app.root;$('exportBtn').disabled=!app.groups.length}
-function faceColour(p,f){const tex=app.uploaded||p.tex;if(tex&&p.uv){let u=0,v=0;for(let k=0;k<3;k++){u+=p.uv.getX(f*3+k)/3;v+=p.uv.getY(f*3+k)/3}return sample(tex,u,v)}const m=Array.isArray(p.original)?p.original[0]:p.original,c=m?.color||new THREE.Color(1,1,1);return[c.r,c.g,c.b]}
-function centroid(p,f){const q=new THREE.Vector3();for(let k=0;k<3;k++)q.add(new THREE.Vector3(p.pos.getX(f*3+k),p.pos.getY(f*3+k),p.pos.getZ(f*3+k)));return q.multiplyScalar(1/3)}
-function orientationAxes(front){const up=$('upAxis').value,U=up==='y'?1:2,F=front[0]==='x'?0:2,sign=front[1]==='+'?1:-1,W=[0,1,2].find(i=>i!==U&&i!==F);return{U,F,W,sign}}
-function normalized(p,front){const b=new THREE.Box3().setFromBufferAttribute(p.pos),min=[b.min.x,b.min.y,b.min.z],max=[b.max.x,b.max.y,b.max.z],range=max.map((v,i)=>v-min[i]||1),{U,F,W,sign}=orientationAxes(front);return p.centres.map(v=>{const a=[v.x,v.y,v.z],n=a.map((x,i)=>(x-min[i])/range[i]);return{u:n[U],w:n[W]-.5,f:sign>0?n[F]:1-n[F]}})}
-function deriveSeeds(p,npos){const central=[],top=[],dark=[];for(let f=0;f<p.faceCount;f++){const q=npos[f],c=p.colours[f];if(q.f>.72&&Math.abs(q.w)<.20&&q.u>.38&&q.u<.72)central.push(c);if(q.u>.73&&q.f>.35)top.push(c);if(lum(c)<.32)dark.push(c)}const skin=median(central),skinL=lum(skin);const hairCandidates=top.filter(c=>lum(c)<skinL*.88);const hair=median(hairCandidates.length?hairCandidates:dark,[.18,.1,.07]);return{skin,hair}}
-function rawClassify(p,npos,defs,seeds){const sens=+$('featureSensitivity').value,eyeW=+$('eyeWidth').value/100,eyeH=+$('eyeHeight').value/100,lipS=+$('lipScale').value/100,skinTol=+$('skinTolerance').value,hairTol=+$('hairTolerance').value,idx=k=>defs.findIndex(x=>x.key===k),skinI=idx('skin'),hairI=idx('hair'),lipI=idx('lips'),eyeI=idx('eyes'),browI=idx('brows'),scleraI=idx('sclera'),irisI=idx('iris'),pupilI=idx('pupil'),otherI=idx('other');const Ls=lab(seeds.skin),skinLum=lum(seeds.skin),labels=new Int16Array(p.faceCount),conf=new Float32Array(p.faceCount);const counts={skin:0,hair:0,lips:0,eyes:0,brows:0,other:0};for(let f=0;f<p.faceCount;f++){const q=npos[f],c=p.colours[f],Lc=lab(c),ds=de(c,seeds.skin),dh=de(c,seeds.hair),front=q.f>.58,central=Math.abs(q.w)<.43;let label=otherI,confidence=.15;if(front&&central&&ds<skinTol*1.45){label=skinI;confidence=Math.max(.3,1-ds/(skinTol*1.7))}const hairZone=q.u>.70||Math.abs(q.w)>.30||q.f<.48;if((hairZone&&dh<hairTol*1.35)||(dh<hairTol&&dh<ds*.8)){label=hairI;confidence=Math.max(.35,1-dh/(hairTol*1.6))}const lipZone=front&&Math.abs(q.w)<.17*lipS&&q.u>.32&&q.u<.48;const red=Lc[1]-Ls[1],lipContrast=ds;if(lipZone&&red>3.5/sens&&lipContrast>5){label=lipI;confidence=Math.min(1,(red/18+lipContrast/45)*sens)}const eyeZone=front&&Math.abs(q.w)>.055&&Math.abs(q.w)<.32*eyeW&&q.u>.51&&q.u<.69*eyeH;const eyeContrast=ds;if(eyeZone&&eyeContrast>6/sens){if(scleraI>=0){const l=lum(c);if(l>skinLum*.82&&Math.abs(Lc[1])<20)label=scleraI;else if(l<.09)label=pupilI;else label=irisI}else label=eyeI;confidence=Math.min(1,eyeContrast/24*sens)}const browZone=front&&Math.abs(q.w)>.06&&Math.abs(q.w)<.34&&q.u>.65&&q.u<.77;if(browZone&&lum(c)<skinLum*.72&&dh<ds*1.5){label=browI;confidence=Math.min(1,(skinLum-lum(c))/.32)}labels[f]=label;conf[f]=Math.max(.05,confidence);const k=defs[label]?.key||'other';counts[k==='sclera'||k==='iris'||k==='pupil'?'eyes':k]=(counts[k==='sclera'||k==='iris'||k==='pupil'?'eyes':k]||0)+1}return{labels,conf,counts,seeds}}
-function scoreCandidate(result,total){const r={};for(const[k,v]of Object.entries(result.counts))r[k]=v/total;let score=0;const range=(v,a,b,w)=>v<a?w*(v/a-1):v>b?w*(1-(v-b)/(1-b)):w;score+=range(r.skin||0,.18,.68,35);score+=range(r.hair||0,.12,.70,25);score+=range(r.eyes||0,.0002,.04,18);score+=range(r.lips||0,.0001,.025,15);score+=range(r.brows||0,.00005,.025,8);score+=Math.max(-15,Math.min(15,(lum(result.seeds.skin)-lum(result.seeds.hair))*55));if((r.skin||0)<.08)score-=40;if((r.hair||0)>.82)score-=35;if((r.eyes||0)===0)score-=15;if((r.lips||0)===0)score-=10;return score}
-function semanticSmooth(p,passes){const protectedKeys=new Set(['lips','eyes','sclera','iris','pupil','brows']);for(let z=0;z<passes;z++){const next=new Int16Array(p.labels);let changes=0;for(let f=0;f<p.faceCount;f++){const current=app.groups[p.labels[f]]?.key;if(protectedKeys.has(current)&&p.confidence[f]>.3)continue;const votes=new Map();for(const n of p.adj[f])votes.set(p.labels[n],(votes.get(p.labels[n])||0)+p.confidence[n]);let best=p.labels[f],score=0;votes.forEach((v,k)=>{if(v>score){score=v;best=k}});if(best!==p.labels[f]&&score>1.8){next[f]=best;changes++}}p.labels=next;if(!changes)break}}
-function classify(){if(!app.root)return;try{status('Testing head orientations and detecting facial features…');app.groups=$('separateEyes').checked?[...BASE.filter(g=>g.key!=='eyes'),...EYES]:BASE.map(g=>({...g}));app.parts.forEach(p=>{p.colours=Array.from({length:p.faceCount},(_,f)=>faceColour(p,f));p.centres=Array.from({length:p.faceCount},(_,f)=>centroid(p,f))});const candidates=$('autoFront').checked?['z+','z-','x+','x-']:[$('frontAxis').value];app.orientation=candidates.map(front=>{let score=0,summary={skin:0,hair:0,lips:0,eyes:0,brows:0,other:0},results=[];for(const p of app.parts){const npos=normalized(p,front),seeds=deriveSeeds(p,npos),res=rawClassify(p,npos,app.groups,seeds);score+=scoreCandidate(res,p.faceCount)*p.faceCount;Object.keys(summary).forEach(k=>summary[k]+=res.counts[k]||0);results.push(res)}return{front,score:score/Math.max(1,app.parts.reduce((n,p)=>n+p.faceCount,0)),summary,results}}).sort((a,b)=>b.score-a.score);const chosen=app.orientation[0];app.chosen=chosen.front;$('frontAxis').value=chosen.front;app.parts.forEach((p,i)=>{p.labels=chosen.results[i].labels;p.confidence=chosen.results[i].conf;semanticSmooth(p,+$('semanticPasses').value);rebuild(p)});const total=app.parts.reduce((n,p)=>n+p.faceCount,0),other=app.parts.reduce((n,p)=>n+Array.from(p.labels).filter(x=>app.groups[x]?.key==='other').length,0);app.classified=1-other/Math.max(1,total);renderList();preview();stats();renderScores();$('detectionNotes').innerHTML=`Selected <b>${chosen.front}</b> front automatically.<br>Skin L*: ${lab(chosen.results[0].seeds.skin)[0].toFixed(1)} · Hair L*: ${lab(chosen.results[0].seeds.hair)[0].toFixed(1)}<br><br>Orientation is chosen before final semantic smoothing.`;status(`Classification complete using ${chosen.front} front.`)}catch(e){console.error(e);status('Classification failed: '+(e.message||e))}}
-function rebuild(p){const P=[],N=[],U=[],g=new THREE.BufferGeometry();let start=0;p.materials.forEach(m=>m?.dispose());p.materials=[];for(let gi=0;gi<app.groups.length;gi++){const faces=[];for(let f=0;f<p.faceCount;f++)if(p.labels[f]===gi)faces.push(f);if(!faces.length)continue;for(const f of faces)for(let k=0;k<3;k++){const q=f*3+k;P.push(p.pos.getX(q),p.pos.getY(q),p.pos.getZ(q));N.push(p.norm.getX(q),p.norm.getY(q),p.norm.getZ(q));if(p.uv)U.push(p.uv.getX(q),p.uv.getY(q))}g.addGroup(start,faces.length*3,gi);start+=faces.length*3;const m=material(app.groups[gi].colour);m.name=app.groups[gi].name;p.materials[gi]=m}g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));g.setAttribute('normal',new THREE.Float32BufferAttribute(N,3));if(U.length)g.setAttribute('uv',new THREE.Float32BufferAttribute(U,2));p.mesh.geometry=g;p.mesh.material=p.materials}
-function preview(){for(const p of app.parts){if($('previewMode').value==='original'){p.mesh.material=p.original;continue}if($('previewMode').value==='semantic'){p.mesh.material=p.materials;continue}const mats=app.groups.map((g,i)=>{const vals=[];for(let f=0;f<p.faceCount;f++)if(p.labels[f]===i)vals.push(p.confidence[f]);const a=vals.length?vals.reduce((x,y)=>x+y,0)/vals.length:0;return material(new THREE.Color().setHSL(.62*(1-a),.72,.5))});p.mesh.material=mats}}
-function renderList(){const list=$('groupList');list.innerHTML='';if(!app.groups.length){list.innerHTML='<div class="empty">Load a model and run automatic classification.</div>';return}const total=app.parts.reduce((n,p)=>n+p.faceCount,0);app.groups.forEach((g,i)=>{const faces=app.parts.reduce((n,p)=>n+(p.labels?Array.from(p.labels).filter(x=>x===i).length:0),0),row=document.createElement('div');row.className='groupRow';row.innerHTML=`<div class="swatch" style="background:#${new THREE.Color(g.colour).getHexString()}"></div><div><div>${g.name}</div><small>${faces.toLocaleString()} faces</small></div><small>${Math.round(faces/Math.max(1,total)*100)}%</small>`;list.appendChild(row)})}
-function renderScores(){const list=$('orientationScores');list.innerHTML='';app.orientation.forEach((o,i)=>{const total=Object.values(o.summary).reduce((a,b)=>a+b,0),row=document.createElement('div');row.className='groupRow';row.innerHTML=`<div class="swatch" style="background:${i===0?'#5cc8ff':'#495563'}"></div><div><div>${o.front}${i===0?' · selected':''}</div><small>Skin ${Math.round((o.summary.skin||0)/total*100)}% · Hair ${Math.round((o.summary.hair||0)/total*100)}% · Eyes ${((o.summary.eyes||0)/total*100).toFixed(2)}%</small></div><small>${o.score.toFixed(1)}</small>`;list.appendChild(row)})}
-async function load(file){if(!file)return;if(!file.name.toLowerCase().endsWith('.glb')){status('Please select a .glb file.');return}clear();app.name=file.name;status('Loading GLB…');try{const buffer=await file.arrayBuffer(),gltf=await new Promise((res,rej)=>new GLTFLoader().parse(buffer,'',res,rej));app.root=gltf.scene||gltf.scenes?.[0];if(!app.root)throw new Error('No scene found.');scene.add(app.root);const meshes=[];app.root.traverse(o=>{if(o.isMesh&&o.geometry)meshes.push(o)});if(!meshes.length)throw new Error('No mesh geometry found.');for(const m of meshes)app.parts.push(await prepare(m));$('meshName').textContent=file.name;$('textureMeta').textContent=app.parts.some(p=>p.tex)?'Embedded albedo detected.':'No embedded albedo detected.';frame();stats();status(`Loaded ${meshes.length} mesh part${meshes.length===1?'':'s'}.`)}catch(e){console.error(e);clear();status('Load failed: '+(e.message||e))}}
-function exportGLB(){if(!app.root||!app.groups.length)return;new GLTFExporter().parse(app.root,b=>{const url=URL.createObjectURL(new Blob([b],{type:'model/gltf-binary'})),a=document.createElement('a');a.href=url;a.download=app.name.replace(/\.glb$/i,'')+'-auto-facegroups.glb';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);status('Exported GLB.')},e=>status('Export failed: '+e.message),{binary:true})}
-$('openGlbBtn').onclick=()=>{$('glbInput').value='';$('glbInput').click()};$('glbInput').onchange=e=>{const f=e.target.files?.[0];load(f);e.target.value=''};$('openTextureBtn').onclick=()=>{$('textureInput').value='';$('textureInput').click()};$('textureInput').onchange=async e=>{const f=e.target.files?.[0];if(!f)return;try{const b=await createImageBitmap(f);app.uploaded=textureData(b);$('textureMeta').textContent=`Replacement albedo: ${f.name}`;status('Replacement albedo loaded.')}catch(err){status('Texture load failed: '+err.message)}e.target.value=''};$('frameBtn').onclick=frame;$('generateBtn').onclick=classify;$('exportBtn').onclick=exportGLB;$('previewMode').onchange=preview;$('gridToggle').onchange=e=>grid.visible=e.target.checked;$('autoFront').onchange=e=>$('frontAxis').disabled=e.target.checked;const dz=$('dropZone');dz.onclick=()=>$('openGlbBtn').click();dz.ondragover=e=>e.preventDefault();dz.ondrop=e=>{e.preventDefault();load(e.dataTransfer.files?.[0])};$('frontAxis').disabled=true;status('Ready — load a UV-mapped character-head GLB.');renderList();stats();
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+
+const $ = (id) => document.getElementById(id);
+const viewport = $('viewport');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x101820);
+const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 10000);
+camera.position.set(3, 2, 4);
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+viewport.appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 2.0));
+const sun = new THREE.DirectionalLight(0xffffff, 2.4); sun.position.set(4, 8, 6); scene.add(sun);
+const grid = new THREE.GridHelper(20, 40, 0x536272, 0x2b3540); scene.add(grid);
+
+const app = {
+  root: null,
+  sourceName: 'model.glb',
+  parts: [],
+  uploadedTexture: null,
+  uploadedTextureInfo: null,
+  quantised: null,
+  wireHelpers: [],
+  generatedGroupCount: 0,
+};
+
+function setStatus(message) {
+  $('status').textContent = message;
+  $('statusPill').textContent = message;
+}
+
+function resize() {
+  const rect = viewport.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  camera.aspect = rect.width / rect.height;
+  camera.updateProjectionMatrix();
+  renderer.setSize(rect.width, rect.height, false);
+}
+new ResizeObserver(resize).observe(viewport); resize();
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+function clearWire() { app.wireHelpers.forEach(w => scene.remove(w)); app.wireHelpers = []; }
+
+function clearGeneratedMaterials(part) {
+  (part.generatedMaterials || []).forEach((m) => m.dispose());
+  part.generatedMaterials = [];
+  if (part.quantisedMap) part.quantisedMap.dispose();
+  part.quantisedMap = null;
+}
+
+function clearModel() {
+  clearWire();
+  if (app.root) scene.remove(app.root);
+  app.parts.forEach(clearGeneratedMaterials);
+  app.root = null;
+  app.parts = [];
+  app.generatedGroupCount = 0;
+  app.quantised = null;
+  $('meshName').textContent = 'No model loaded';
+  updateTextureMeta(); updatePaletteUI(); updateStats(); updatePreview();
+}
+
+function frameModel() {
+  if (!app.root) return;
+  const box = new THREE.Box3().setFromObject(app.root);
+  if (box.isEmpty()) return;
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const diameter = Math.max(size.x, size.y, size.z) || 1;
+  controls.target.copy(center);
+  camera.position.copy(center).add(new THREE.Vector3(diameter * 1.5, diameter * 0.9, diameter * 1.5));
+  camera.near = Math.max(diameter / 1000, 0.001);
+  camera.far = diameter * 1000;
+  camera.updateProjectionMatrix();
+}
+
+function updateStats() {
+  let tris = 0; app.parts.forEach(p => tris += p.faceCount);
+  $('trianglesStat').textContent = tris.toLocaleString();
+  $('groupsStat').textContent = app.generatedGroupCount.toLocaleString();
+  $('paletteStat').textContent = (app.quantised?.palette?.length || 0).toLocaleString();
+  $('meshPartsStat').textContent = app.parts.length.toLocaleString();
+  const loaded = !!app.root;
+  $('frameBtn').disabled = !loaded;
+  $('quantiseBtn').disabled = !loaded;
+  $('exportGlbBtn').disabled = !loaded || !app.generatedGroupCount;
+  $('exportPngBtn').disabled = !loaded || !app.quantised;
+}
+
+function updateTextureMeta() {
+  const lines = [];
+  if (!app.root) { $('textureMeta').textContent = 'No model loaded.'; return; }
+  if (app.uploadedTextureInfo) lines.push(`Replacement: ${app.uploadedTextureInfo.name} (${app.uploadedTextureInfo.width}×${app.uploadedTextureInfo.height})`);
+  const emb = app.parts.find(p => p.embeddedTextureInfo)?.embeddedTextureInfo;
+  if (emb) lines.push(`Embedded: ${emb.name} (${emb.width}×${emb.height})`);
+  if (app.quantised) lines.push(`Quantised palette: ${app.quantised.palette.length} colours`);
+  if (!lines.length) lines.push('No albedo texture found.');
+  $('textureMeta').innerHTML = lines.join('<br>');
+}
+
+function updatePaletteUI() {
+  const list = $('paletteList'); list.innerHTML = '';
+  if (!app.quantised?.palette?.length) {
+    list.innerHTML = '<div class="empty">Quantise the texture to see palette colours.</div>';
+    const ctx = $('texturePreview').getContext('2d'); ctx.clearRect(0,0,$('texturePreview').width,$('texturePreview').height);
+    return;
+  }
+  app.quantised.palette.forEach((rgb, i) => {
+    const row = document.createElement('div'); row.className = 'paletteRow';
+    const hex = `#${rgb.map(v => v.toString(16).padStart(2,'0')).join('')}`;
+    const usage = app.quantised.indexCounts?.[i] || 0;
+    row.innerHTML = `<div class="swatch" style="background:${hex}"></div><div><div>Palette ${i+1}</div><small>${hex}</small></div><small>${usage.toLocaleString()}</small>`;
+    list.appendChild(row);
+  });
+  const canvas = $('texturePreview');
+  const ctx = canvas.getContext('2d');
+  const src = app.quantised.canvas;
+  const scale = Math.min(canvas.width / src.width, canvas.height / src.height);
+  const w = src.width * scale, h = src.height * scale;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(src, (canvas.width - w)/2, (canvas.height - h)/2, w, h);
+}
+
+function updatePreview() {
+  const mode = $('previewMode').value;
+  app.parts.forEach((part) => {
+    if (mode === 'original') {
+      part.mesh.material = part.originalMaterial;
+    } else if (mode === 'quantisedTexture' && part.quantisedTexturedMaterial) {
+      part.mesh.material = part.quantisedTexturedMaterial;
+    } else if ((mode === 'paletteModel' || mode === 'randomGroups') && part.generatedMaterials?.length) {
+      part.mesh.material = part.generatedMaterials;
+    } else {
+      part.mesh.material = part.originalMaterial;
+    }
+  });
+  clearWire();
+  if ($('wireToggle').checked) {
+    app.root?.updateMatrixWorld(true);
+    app.parts.forEach((part) => {
+      const helper = new THREE.LineSegments(new THREE.WireframeGeometry(part.mesh.geometry), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.28 }));
+      helper.applyMatrix4(part.mesh.matrixWorld);
+      scene.add(helper); app.wireHelpers.push(helper);
+    });
+  }
+}
+
+function parseGLB(arrayBuffer) { return new Promise((resolve, reject) => new GLTFLoader().parse(arrayBuffer, '', resolve, reject)); }
+
+async function createTextureCanvasFromImage(image) {
+  if (!image) return null;
+  await image.decode?.().catch(() => {});
+  const width = image.width || image.videoWidth, height = image.height || image.videoHeight;
+  if (!width || !height) return null;
+  const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true }); ctx.drawImage(image, 0, 0, width, height);
+  const imageData = ctx.getImageData(0,0,width,height);
+  return { canvas, ctx, width, height, imageData };
+}
+
+function createTextureCanvasFromBitmap(bitmap) {
+  const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true }); ctx.drawImage(bitmap, 0, 0);
+  const imageData = ctx.getImageData(0,0,bitmap.width,bitmap.height);
+  return { canvas, ctx, width: bitmap.width, height: bitmap.height, imageData };
+}
+
+function getMeshes() {
+  const meshes = []; app.root?.traverse((o) => { if (o.isMesh && o.geometry) meshes.push(o); }); return meshes;
+}
+
+function vertexKey(position, index) {
+  return `${Math.round(position.getX(index)*1e5)},${Math.round(position.getY(index)*1e5)},${Math.round(position.getZ(index)*1e5)}`;
+}
+
+function buildAdjacency(position) {
+  const faceCount = position.count / 3;
+  const edgeMap = new Map();
+  const adjacency = Array.from({ length: faceCount }, () => new Set());
+  for (let face = 0; face < faceCount; face++) {
+    const ids = [vertexKey(position, face*3), vertexKey(position, face*3+1), vertexKey(position, face*3+2)];
+    [[0,1],[1,2],[2,0]].forEach(([a,b]) => {
+      const key = ids[a] < ids[b] ? `${ids[a]}|${ids[b]}` : `${ids[b]}|${ids[a]}`;
+      if (!edgeMap.has(key)) edgeMap.set(key, []);
+      edgeMap.get(key).push(face);
+    });
+  }
+  edgeMap.forEach((faces) => { for (let i=0;i<faces.length;i++) for (let j=i+1;j<faces.length;j++) { adjacency[faces[i]].add(faces[j]); adjacency[faces[j]].add(faces[i]); } });
+  return adjacency;
+}
+
+async function preparePart(mesh) {
+  const originalMaterial = mesh.material;
+  const geometry = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone();
+  geometry.computeVertexNormals(); mesh.geometry = geometry;
+  const position = geometry.attributes.position; const normal = geometry.attributes.normal; const uv = geometry.attributes.uv;
+  const materials = Array.isArray(originalMaterial) ? originalMaterial : [originalMaterial];
+  const embeddedTexture = materials.find(m => m?.map)?.map || null;
+  const embeddedCanvas = embeddedTexture ? await createTextureCanvasFromImage(embeddedTexture.image) : null;
+  return {
+    mesh, originalMaterial, position, normal, uv,
+    faceCount: position.count / 3,
+    adjacency: buildAdjacency(position),
+    embeddedTextureCanvas: embeddedCanvas,
+    embeddedTextureInfo: embeddedCanvas ? { name: embeddedTexture.name || 'Embedded albedo', width: embeddedCanvas.width, height: embeddedCanvas.height } : null,
+    generatedMaterials: [], quantisedTexturedMaterial: null, quantisedMap: null,
+  };
+}
+
+function pixelsFromImageData(imageData) {
+  const d = imageData.data, pixels = [];
+  const maxSamples = 250000;
+  const step = Math.max(1, Math.floor((d.length / 4) / maxSamples));
+  for (let px = 0; px < d.length / 4; px += step) {
+    const i = px * 4;
+    if (d[i+3] < 8) continue;
+    pixels.push([d[i], d[i+1], d[i+2]]);
+  }
+  return pixels;
+}
+
+function colourRange(pixels) {
+  const min = [255,255,255], max = [0,0,0];
+  pixels.forEach((p) => { for (let i=0;i<3;i++) { if (p[i] < min[i]) min[i]=p[i]; if (p[i] > max[i]) max[i]=p[i]; } });
+  return [max[0]-min[0], max[1]-min[1], max[2]-min[2]];
+}
+
+function averageColour(pixels) {
+  const out=[0,0,0]; if (!pixels.length) return out;
+  pixels.forEach((p)=>{out[0]+=p[0]; out[1]+=p[1]; out[2]+=p[2];});
+  return out.map(v => Math.round(v / pixels.length));
+}
+
+function medianCutQuantize(imageData, paletteSize) {
+  const pixels = pixelsFromImageData(imageData);
+  let boxes = [{ pixels }];
+  while (boxes.length < paletteSize) {
+    boxes.sort((a,b) => {
+      const ra = colourRange(a.pixels), rb = colourRange(b.pixels);
+      return Math.max(...rb) - Math.max(...ra);
+    });
+    const box = boxes.shift();
+    if (!box || box.pixels.length <= 1) { if (box) boxes.push(box); break; }
+    const ranges = colourRange(box.pixels);
+    const channel = ranges.indexOf(Math.max(...ranges));
+    box.pixels.sort((p1,p2)=>p1[channel]-p2[channel]);
+    const mid = Math.floor(box.pixels.length / 2);
+    boxes.push({ pixels: box.pixels.slice(0, mid) }, { pixels: box.pixels.slice(mid) });
+    if (boxes.every(b => b.pixels.length <= 1)) break;
+  }
+  const palette = boxes.map(b => averageColour(b.pixels));
+  return applyPalette(imageData, palette);
+}
+
+function nearestPaletteIndexRGB(rgb, palette) {
+  let best = 0, bestDist = Infinity;
+  for (let i = 0; i < palette.length; i++) {
+    const p = palette[i];
+    const dr = rgb[0]-p[0], dg = rgb[1]-p[1], db = rgb[2]-p[2];
+    const d = dr*dr + dg*dg + db*db;
+    if (d < bestDist) { bestDist = d; best = i; }
+  }
+  return best;
+}
+
+function applyPalette(imageData, palette) {
+  const width = imageData.width, height = imageData.height;
+  const src = imageData.data;
+  const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const out = ctx.createImageData(width, height);
+  const indexMap = new Uint16Array(width * height);
+  const counts = new Uint32Array(palette.length);
+  for (let i = 0, px = 0; i < src.length; i += 4, px++) {
+    if (src[i+3] < 8) { out.data[i+3] = 0; continue; }
+    const idx = nearestPaletteIndexRGB([src[i], src[i+1], src[i+2]], palette);
+    indexMap[px] = idx; counts[idx]++;
+    const p = palette[idx];
+    out.data[i] = p[0]; out.data[i+1] = p[1]; out.data[i+2] = p[2]; out.data[i+3] = src[i+3];
+  }
+  ctx.putImageData(out, 0, 0);
+  return { canvas, ctx, imageData: out, width, height, palette, indexMap, indexCounts: Array.from(counts) };
+}
+
+function quantizeTexture(sourceTexture, paletteSize) {
+  return medianCutQuantize(sourceTexture.imageData, paletteSize);
+}
+
+function samplePatterns(count) {
+  if (count <= 1) return [[1/3,1/3,1/3]];
+  if (count <= 4) return [[1/3,1/3,1/3],[0.65,0.175,0.175],[0.175,0.65,0.175],[0.175,0.175,0.65]];
+  if (count <= 7) return [[1/3,1/3,1/3],[0.7,0.15,0.15],[0.15,0.7,0.15],[0.15,0.15,0.7],[0.5,0.5,0],[0,0.5,0.5],[0.5,0,0.5]];
+  return [[1/3,1/3,1/3],[0.7,0.15,0.15],[0.15,0.7,0.15],[0.15,0.15,0.7],[0.5,0.5,0],[0,0.5,0.5],[0.5,0,0.5],[0.6,0.2,0.2],[0.2,0.6,0.2],[0.2,0.2,0.6],[0.4,0.4,0.2],[0.4,0.2,0.4],[0.2,0.4,0.4]];
+}
+
+function sampleIndexMap(indexedTexture, u, v) {
+  const uu = ((u % 1) + 1) % 1;
+  const vv = ((v % 1) + 1) % 1;
+  const x = Math.min(indexedTexture.width - 1, Math.max(0, Math.round(uu * (indexedTexture.width - 1))));
+  const y = Math.min(indexedTexture.height - 1, Math.max(0, Math.round((1 - vv) * (indexedTexture.height - 1))));
+  return indexedTexture.indexMap[y * indexedTexture.width + x];
+}
+
+function facePaletteIndex(part, face, indexedTexture, sampleCount, decisionMode) {
+  if (!part.uv) return 0;
+  const pattern = samplePatterns(sampleCount);
+  if (decisionMode === 'centre') {
+    const b = pattern[0];
+    let u = 0, v = 0;
+    for (let k=0;k<3;k++) { u += part.uv.getX(face*3+k)*b[k]; v += part.uv.getY(face*3+k)*b[k]; }
+    return sampleIndexMap(indexedTexture, u, v);
+  }
+  const votes = new Map();
+  pattern.forEach((b) => {
+    let u = 0, v = 0;
+    for (let k=0;k<3;k++) { u += part.uv.getX(face*3+k)*b[k]; v += part.uv.getY(face*3+k)*b[k]; }
+    const idx = sampleIndexMap(indexedTexture, u, v);
+    votes.set(idx, (votes.get(idx) || 0) + 1);
+  });
+  let best = 0, bestVotes = -1;
+  votes.forEach((count, idx) => { if (count > bestVotes) { bestVotes = count; best = idx; } });
+  return best;
+}
+
+function createMaterialFromRGB(rgb) {
+  return new THREE.MeshStandardMaterial({ color: new THREE.Color(rgb[0]/255, rgb[1]/255, rgb[2]/255), roughness: 0.72, metalness: 0, side: THREE.DoubleSide });
+}
+function createRandomMaterial(seed) {
+  return new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL((seed * 0.61803398875) % 1, 0.65, 0.55), roughness: 0.72, metalness: 0, side: THREE.DoubleSide });
+}
+
+function faceGroupsByPalette(part, paletteIndices) {
+  const groupMap = new Map();
+  for (let face=0; face<part.faceCount; face++) {
+    const idx = paletteIndices[face];
+    if (!groupMap.has(idx)) groupMap.set(idx, []);
+    groupMap.get(idx).push(face);
+  }
+  return Array.from(groupMap.entries()).map(([paletteIndex, faces]) => ({ paletteIndex, faces }));
+}
+
+function connectedIslandsByPalette(part, paletteIndices) {
+  const visited = new Uint8Array(part.faceCount);
+  const groups = [];
+  for (let seed = 0; seed < part.faceCount; seed++) {
+    if (visited[seed]) continue;
+    const paletteIndex = paletteIndices[seed];
+    const queue = [seed], faces = [];
+    visited[seed] = 1;
+    while (queue.length) {
+      const face = queue.pop(); faces.push(face);
+      part.adjacency[face].forEach((nb) => {
+        if (!visited[nb] && paletteIndices[nb] === paletteIndex) { visited[nb] = 1; queue.push(nb); }
+      });
+    }
+    groups.push({ paletteIndex, faces });
+  }
+  return groups;
+}
+
+function mergeTinyIslands(groups, part, paletteIndices, minSize) {
+  if (minSize <= 1) return groups;
+  const faceToGroup = new Int32Array(part.faceCount);
+  groups.forEach((group, gi) => group.faces.forEach((f) => { faceToGroup[f] = gi; }));
+  for (let gi = 0; gi < groups.length; gi++) {
+    const group = groups[gi];
+    if (!group.faces.length || group.faces.length >= minSize) continue;
+    const votes = new Map();
+    group.faces.forEach((face) => {
+      part.adjacency[face].forEach((nb) => {
+        const other = faceToGroup[nb];
+        if (other !== gi) votes.set(other, (votes.get(other) || 0) + 1);
+      });
+    });
+    let best = -1, bestVotes = -1;
+    votes.forEach((count, idx) => { if (count > bestVotes) { bestVotes = count; best = idx; } });
+    if (best >= 0) {
+      group.faces.forEach((face) => { paletteIndices[face] = groups[best].paletteIndex; });
+    }
+  }
+  return connectedIslandsByPalette(part, paletteIndices);
+}
+
+function rebuildGeometryForGroups(part, groups, palette, previewMode) {
+  clearGeneratedMaterials(part);
+  const { position, normal, uv } = part;
+  const newGeometry = new THREE.BufferGeometry();
+  const newPos = [], newNorm = [], newUv = [];
+  let start = 0;
+  groups.forEach((group, index) => {
+    group.faces.forEach((face) => {
+      for (let k=0;k<3;k++) {
+        const i = face*3 + k;
+        newPos.push(position.getX(i), position.getY(i), position.getZ(i));
+        newNorm.push(normal.getX(i), normal.getY(i), normal.getZ(i));
+        if (uv) newUv.push(uv.getX(i), uv.getY(i));
+      }
+    });
+    newGeometry.addGroup(start, group.faces.length * 3, index);
+    start += group.faces.length * 3;
+  });
+  newGeometry.setAttribute('position', new THREE.Float32BufferAttribute(newPos, 3));
+  newGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(newNorm, 3));
+  if (newUv.length) newGeometry.setAttribute('uv', new THREE.Float32BufferAttribute(newUv, 2));
+  part.mesh.geometry = newGeometry;
+  part.generatedMaterials = groups.map((group, i) => previewMode === 'randomGroups' ? createRandomMaterial(i + 1) : createMaterialFromRGB(palette[group.paletteIndex]));
+  part.generatedMaterials.forEach((m, i) => { m.name = `Palette_${groups[i].paletteIndex + 1}`; });
+}
+
+function buildQuantisedTextureMaterial(part, quantisedTexture) {
+  if (part.quantisedTexturedMaterial) part.quantisedTexturedMaterial.dispose();
+  const tex = new THREE.CanvasTexture(quantisedTexture.canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.flipY = false;
+  tex.needsUpdate = true;
+  part.quantisedMap = tex;
+  part.quantisedTexturedMaterial = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.72, metalness: 0, side: THREE.DoubleSide });
+}
+
+async function loadGLB(file) {
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.glb')) { setStatus('Please choose a .glb file.'); return; }
+  clearModel(); app.sourceName = file.name;
+  setStatus(`Loading ${file.name}…`);
+  try {
+    const gltf = await parseGLB(await file.arrayBuffer());
+    app.root = gltf.scene || gltf.scenes?.[0];
+    if (!app.root) throw new Error('No scene found in GLB.');
+    scene.add(app.root);
+    const meshes = getMeshes();
+    if (!meshes.length) throw new Error('No mesh geometry found.');
+    for (let i=0;i<meshes.length;i++) app.parts.push(await preparePart(meshes[i]));
+    $('meshName').textContent = file.name;
+    frameModel(); updateTextureMeta(); updateStats(); updatePreview();
+    setStatus(`Loaded ${meshes.length} mesh part${meshes.length === 1 ? '' : 's'}.`);
+  } catch (error) {
+    console.error(error); clearModel(); setStatus(`Load failed: ${error?.message || error}`);
+  } finally { $('glbInput').value = ''; }
+}
+
+async function loadReplacementTexture(file) {
+  if (!file) return;
+  try {
+    const bitmap = await createImageBitmap(file);
+    app.uploadedTexture = createTextureCanvasFromBitmap(bitmap);
+    app.uploadedTextureInfo = { name: file.name, width: bitmap.width, height: bitmap.height };
+    updateTextureMeta(); updateStats(); setStatus(`Loaded replacement texture: ${file.name}.`);
+  } catch (error) {
+    console.error(error); setStatus(`Could not read replacement texture: ${error?.message || error}`);
+  } finally { $('textureInput').value = ''; }
+}
+
+function getSourceTexture() {
+  if (app.uploadedTexture) return app.uploadedTexture;
+  return app.parts.find(p => p.embeddedTextureCanvas)?.embeddedTextureCanvas || null;
+}
+
+function buildFacegroups() {
+  if (!app.parts.length) return;
+  const sourceTexture = getSourceTexture();
+  if (!sourceTexture) { setStatus('No albedo texture available.'); return; }
+  const paletteSize = Math.max(2, +$('paletteSize').value || 12);
+  const sampleCount = +$('sampleCount').value;
+  const decisionMode = $('decisionMode').value;
+  const groupMode = $('groupMode').value;
+  const cleanupIslands = $('cleanupIslands').checked;
+  const minIslandSize = Math.max(1, +$('minIslandSize').value || 1);
+  setStatus('Quantising texture image…');
+  app.quantised = quantizeTexture(sourceTexture, paletteSize);
+  let totalGroups = 0;
+  app.parts.forEach((part) => {
+    if (!part.uv) throw new Error('A mesh part has no UV coordinates.');
+    setStatus('Transposing palette indices to mesh faces…');
+    const paletteIndices = new Uint16Array(part.faceCount);
+    for (let face=0; face<part.faceCount; face++) paletteIndices[face] = facePaletteIndex(part, face, app.quantised, sampleCount, decisionMode);
+    let groups = groupMode === 'islands' ? connectedIslandsByPalette(part, paletteIndices) : faceGroupsByPalette(part, paletteIndices);
+    if (groupMode === 'islands' && cleanupIslands) groups = mergeTinyIslands(groups, part, paletteIndices, minIslandSize);
+    part.facePaletteIndices = paletteIndices;
+    part.groups = groups;
+    buildQuantisedTextureMaterial(part, app.quantised);
+    rebuildGeometryForGroups(part, groups, app.quantised.palette, $('previewMode').value);
+    totalGroups += groups.length;
+  });
+  app.generatedGroupCount = totalGroups;
+  updateTextureMeta(); updatePaletteUI(); updateStats(); updatePreview();
+  setStatus(`Built ${totalGroups} facegroups from a ${app.quantised.palette.length}-colour quantised texture.`);
+}
+
+function exportGLB() {
+  if (!app.root || !app.generatedGroupCount) return;
+  setStatus('Exporting GLB…');
+  const exporter = new GLTFExporter();
+  exporter.parse(app.root, (result) => {
+    const blob = new Blob([result], { type: 'model/gltf-binary' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = app.sourceName.replace(/\.glb$/i, '') + '-quantised-facegroups.glb'; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setStatus('Exported GLB.');
+  }, (error) => setStatus(`Export failed: ${error?.message || error}`), { binary: true, onlyVisible: true });
+}
+
+function exportPNG() {
+  if (!app.quantised) return;
+  const a = document.createElement('a');
+  a.href = app.quantised.canvas.toDataURL('image/png');
+  a.download = app.sourceName.replace(/\.glb$/i, '') + '-quantised.png';
+  a.click();
+}
+
+$('openGlbBtn').addEventListener('click', () => { $('glbInput').value = ''; $('glbInput').click(); });
+$('openTextureBtn').addEventListener('click', () => { $('textureInput').value = ''; $('textureInput').click(); });
+$('glbInput').addEventListener('change', (e) => loadGLB(e.target.files?.[0]));
+$('textureInput').addEventListener('change', (e) => loadReplacementTexture(e.target.files?.[0]));
+$('frameBtn').addEventListener('click', frameModel);
+$('quantiseBtn').addEventListener('click', () => { try { buildFacegroups(); } catch (e) { console.error(e); setStatus(`Build failed: ${e?.message || e}`); } });
+$('exportGlbBtn').addEventListener('click', exportGLB);
+$('exportPngBtn').addEventListener('click', exportPNG);
+$('previewMode').addEventListener('change', () => {
+  if ($('previewMode').value === 'randomGroups' && app.parts.length && app.quantised) {
+    app.parts.forEach((part) => { if (part.groups) rebuildGeometryForGroups(part, part.groups, app.quantised.palette, 'randomGroups'); });
+  } else if (app.parts.length && app.quantised) {
+    app.parts.forEach((part) => { if (part.groups) rebuildGeometryForGroups(part, part.groups, app.quantised.palette, 'paletteModel'); });
+  }
+  updatePreview();
+});
+$('gridToggle').addEventListener('change', (e) => { grid.visible = e.target.checked; });
+$('wireToggle').addEventListener('change', updatePreview);
+
+const dropZone = $('dropZone');
+dropZone.addEventListener('click', () => { $('glbInput').value = ''; $('glbInput').click(); });
+['dragenter','dragover'].forEach(name => dropZone.addEventListener(name, (e) => { e.preventDefault(); dropZone.classList.add('drag'); }));
+['dragleave','drop'].forEach(name => dropZone.addEventListener(name, (e) => { e.preventDefault(); dropZone.classList.remove('drag'); }));
+dropZone.addEventListener('drop', (e) => loadGLB(e.dataTransfer?.files?.[0]));
+
+setStatus('Ready — load a textured GLB.');
+updateTextureMeta(); updatePaletteUI(); updateStats();
