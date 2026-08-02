@@ -1,0 +1,89 @@
+iv></div>
+      <div class="tag">${g.mode==='flat'?'Flat':g.mode==='auto'?`Auto ${g.angle}°`:'Smooth'}</div></div>`;
+    el.onclick=()=>{state.selected=i;updateGroupList();updateEditor()};
+    $('groupList').appendChild(el);
+  });
+}
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
+function updateEditor(){
+  const g=state.groups[state.selected];$('editor').style.display=g?'block':'none';
+  $('selectionPill').textContent=g?g.name:'No group selected';if(!g)return;
+  $('gName').value=g.name;$('gColor').value=g.color;$('gIndex').textContent=`#${state.selected+1}`;
+  $('gMode').value=g.mode;$('gAngle').value=g.angle;$('angleOut').textContent=g.angle+'°';
+  $('angleRow').style.opacity=g.mode==='auto'?1:.4;$('hardBoundary').checked=g.hardBoundary;
+  $('visibleGroup').checked=g.visible;
+}
+function mutateSelected(fn,rebuildNow=true){const g=state.groups[state.selected];if(!g)return;fn(g);updateGroupList();updateEditor();if(rebuildNow)rebuild()}
+
+$('openBtn').onclick=()=>$('fileInput').click();
+$('fileInput').onchange=e=>e.target.files[0]&&loadFile(e.target.files[0]).catch(err=>status('Error: '+err.message));
+$('demoBtn').onclick=makeDemo;$('frameBtn').onclick=frameMesh;
+$('applyBtn').onclick=rebuild;
+$('wire').onchange=rebuild;$('edges').onchange=rebuild;$('groupsColor').onchange=rebuild;
+$('grid').onchange=()=>grid.visible=$('grid').checked;
+$('env').oninput=()=>{scene.children.filter(x=>x.isHemisphereLight).forEach(x=>x.intensity=Number($('env').value)*2)};
+$('exposure').oninput=()=>renderer.toneMappingExposure=Number($('exposure').value);
+$('globalHard').onchange=rebuild;
+$('panelBtn').onclick=()=>$('rightPanel').classList.toggle('open');
+$('aboutBtn').onclick=()=>$('aboutModal').classList.add('show');
+$('closeAbout').onclick=()=>$('aboutModal').classList.remove('show');
+$('aboutModal').onclick=e=>{if(e.target===$('aboutModal'))$('aboutModal').classList.remove('show')};
+
+$('gName').onchange=()=>mutateSelected(g=>g.name=$('gName').value,false);
+$('gColor').oninput=()=>mutateSelected(g=>g.color=$('gColor').value);
+$('gMode').onchange=()=>mutateSelected(g=>g.mode=$('gMode').value);
+$('gAngle').oninput=()=>{$('angleOut').textContent=$('gAngle').value+'°'};
+$('gAngle').onchange=()=>mutateSelected(g=>g.angle=Number($('gAngle').value));
+$('hardBoundary').onchange=()=>mutateSelected(g=>g.hardBoundary=$('hardBoundary').checked);
+$('visibleGroup').onchange=()=>mutateSelected(g=>g.visible=$('visibleGroup').checked);
+$('isolateBtn').onclick=()=>{state.isolated=state.selected;rebuild()};
+$('showAllBtn').onclick=()=>{state.isolated=-1;state.groups.forEach(g=>g.visible=true);rebuild()};
+$('mergeNextBtn').onclick=()=>{
+  const i=state.selected;if(i<=0)return status('Select group 2 or later to merge it into the previous group');
+  for(let t=0;t<state.triGroups.length;t++)if(state.triGroups[t]===i)state.triGroups[t]=i-1;else if(state.triGroups[t]>i)state.triGroups[t]--;
+  state.groups[i-1].count+=state.groups[i].count;state.groups.splice(i,1);state.groups.forEach((g,j)=>g.id=j);
+  state.selected=i-1;rebuild();
+};
+$('allSmooth').onclick=()=>{state.groups.forEach(g=>g.mode='smooth');rebuild()};
+$('allFlat').onclick=()=>{state.groups.forEach(g=>g.mode='flat');rebuild()};
+$('allAuto').onclick=()=>{state.groups.forEach(g=>g.mode='auto');rebuild()};
+
+$('recenterBtn').onclick=()=>{
+  if(!state.baseGeometry)return;state.baseGeometry.computeBoundingBox();
+  const c=state.baseGeometry.boundingBox.getCenter(new THREE.Vector3());state.baseGeometry.translate(-c.x,-c.y,-c.z);rebuild();frameMesh();
+};
+$('flipBtn').onclick=()=>{
+  if(!state.baseGeometry)return;
+  const a=state.baseGeometry.index.array;
+  for(let i=0;i<a.length;i+=3){const tmp=a[i+1];a[i+1]=a[i+2];a[i+2]=tmp}
+  state.baseGeometry.index.needsUpdate=true;rebuild();
+};
+
+renderer.domElement.addEventListener('dblclick',e=>{
+  if(!state.mesh)return;const r=renderer.domElement.getBoundingClientRect();
+  pointer.x=((e.clientX-r.left)/r.width)*2-1;pointer.y=-((e.clientY-r.top)/r.height)*2+1;
+  raycaster.setFromCamera(pointer,camera);const hit=raycaster.intersectObject(state.mesh,false)[0];
+  if(!hit)return;
+  let gi=0;for(let i=0;i<state.renderGeometry.groups.length;i++){
+    const gr=state.renderGeometry.groups[i];if(hit.faceIndex*3>=gr.start&&hit.faceIndex*3<gr.start+gr.count){gi=gr.materialIndex;break}
+  }
+  state.selected=gi;updateGroupList();updateEditor();$('rightPanel').classList.add('open');
+});
+
+const drop=$('drop');
+['dragenter','dragover'].forEach(n=>drop.addEventListener(n,e=>{e.preventDefault();drop.classList.add('over')}));
+['dragleave','drop'].forEach(n=>drop.addEventListener(n,e=>{e.preventDefault();drop.classList.remove('over')}));
+drop.addEventListener('drop',e=>e.dataTransfer.files[0]&&loadFile(e.dataTransfer.files[0]).catch(err=>status('Error: '+err.message)));
+drop.onclick=()=>$('fileInput').click();
+
+function download(blob,name){
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+function stem(){return (state.sourceName||'mesh').replace(/\.[^.]+$/,'').replace(/[^\w.-]+/g,'_')}
+
+$('exportObjBtn').onclick=()=>{
+  if(!state.baseGeometry||!state.renderGeometry)return;
+  const base=state.baseGeometry,bp=base.getAttribute('position'),bix=base.index.array;
+  const dg=state.renderGeometry,dn=dg.getAttribute('normal');
+  let s=`# FaceGroup Smooth welded export\n# One object, shared positi
