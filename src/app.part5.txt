@@ -1,0 +1,55 @@
+on vertices, explicit normals and smoothing groups\no WeldedMesh\n`;
+  const bc=base.getAttribute('color');
+  for(let i=0;i<bp.count;i++){
+    if(bc)s+=`v ${bp.getX(i)} ${bp.getY(i)} ${bp.getZ(i)} ${bc.getX(i)} ${bc.getY(i)} ${bc.getZ(i)}\n`;
+    else s+=`v ${bp.getX(i)} ${bp.getY(i)} ${bp.getZ(i)}\n`;
+  }
+  for(let i=0;i<dn.count;i++)s+=`vn ${dn.getX(i)} ${dn.getY(i)} ${dn.getZ(i)}\n`;
+  let normalCursor=1;
+  for(let gi=0;gi<state.groups.length;gi++){
+    const gr=state.groups[gi];if(!gr.visible||(state.isolated>=0&&gi!==state.isolated))continue;
+    s+=`\ng ${gr.name.replace(/\s+/g,'_')}\n`;
+    s+=gr.mode==='flat'?'s off\n':`s ${gi+1}\n`;
+    for(let t=0;t<state.triGroups.length;t++){
+      if(state.triGroups[t]!==gi)continue;
+      const a=bix[t*3]+1,b=bix[t*3+1]+1,c=bix[t*3+2]+1;
+      s+=`f ${a}//${normalCursor} ${b}//${normalCursor+1} ${c}//${normalCursor+2}\n`;
+      normalCursor+=3;
+    }
+  }
+  download(new Blob([s],{type:'text/plain'}),stem()+'_welded_smoothed.obj');
+  status(`OBJ exported • ${state.weldedBefore-state.weldedAfter} duplicate vertices welded`);
+};
+$('exportGlbBtn').onclick=()=>{
+  if(!state.mesh)return;
+  const exportScene=new THREE.Scene();const clone=state.mesh.clone();clone.geometry=state.renderGeometry.clone();
+  const hasColors=!!state.renderGeometry.getAttribute('color')&&!!state.baseGeometry.getAttribute('color');
+  clone.material=state.groups.map(g=>new THREE.MeshStandardMaterial({name:g.name,color:0xffffff,vertexColors:hasColors,roughness:.65,metalness:.05,side:THREE.DoubleSide}));
+  exportScene.add(clone);
+  new GLTFExporter().parse(exportScene,res=>{
+    download(new Blob([res],{type:'model/gltf-binary'}),stem()+'_smoothed.glb');status('GLB exported');
+  },err=>status('Export error: '+err.message),{binary:true,onlyVisible:true});
+};
+
+$('saveProjectBtn').onclick=()=>{
+  if(!state.baseGeometry)return;
+  const p=state.baseGeometry.getAttribute('position'),idx=state.baseGeometry.index.array;
+  const data={format:'FaceGroupSmooth',version:1,name:state.sourceName,
+    positions:Array.from(p.array),indices:Array.from(idx),indexType:idx.constructor.name,
+    groups:state.groups,triGroups:Array.from(state.triGroups)};
+  download(new Blob([JSON.stringify(data)],{type:'application/json'}),stem()+'.fgs');status('Project saved');
+};
+$('loadProjectBtn').onclick=()=>$('projectInput').click();
+$('projectInput').onchange=async e=>{
+  try{
+    const data=JSON.parse(await e.target.files[0].text());if(data.format!=='FaceGroupSmooth')throw new Error('Not a FaceGroup Smooth project');
+    const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(data.positions,3));
+    const A=data.indexType==='Uint32Array'?Uint32Array:Uint16Array;g.setIndex(new THREE.BufferAttribute(new A(data.indices),1));
+    setupGeometry(g,data.groups,data.name||e.target.files[0].name);state.triGroups=Int32Array.from(data.triGroups);rebuild();
+  }catch(err){status('Project error: '+err.message)}
+};
+
+addEventListener('keydown',e=>{
+  if(e.key.toLowerCase()==='f'&&state.mesh)frameMesh();
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='o'){e.preventDefault();$('fileInput').click()}
+});
