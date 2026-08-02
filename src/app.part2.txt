@@ -1,0 +1,133 @@
+o.isMesh || !o.geometry) return;
+    let g=o.geometry.clone();
+    g.applyMatrix4(o.matrixWorld);
+    g=ensureIndexed(g);
+    const idxCount=g.index.count;
+    if(g.groups?.length){
+      for(const gr of g.groups){
+        groupDefs.push(defaultGroup(groupIndex++, o.name || `Group ${groupIndex}`, triOffset+gr.start/3, gr.count/3));
+      }
+    }else{
+      groupDefs.push(defaultGroup(groupIndex++, o.name || `Group ${groupIndex}`, triOffset, idxCount/3));
+    }
+    triOffset += idxCount/3;
+    g.clearGroups();
+    geometries.push(g);
+  });
+  if(!geometries.length) throw new Error('No mesh geometry found');
+  normalizeMergeAttributes(geometries);
+  const merged=mergeGeometries(geometries,false);
+  return {geometry:merged, groups:groupDefs};
+}
+
+function groupsFromGeometry(g, names=[]){
+  const tris=g.index?g.index.count/3:g.getAttribute('position').count/3;
+  if(g.groups?.length){
+    return g.groups.map((gr,i)=>defaultGroup(i,names[i]||`Group ${i+1}`,gr.start/3,gr.count/3));
+  }
+  return [defaultGroup(0,names[0]||'Main',0,tris)];
+}
+
+async function loadFile(file){
+  status(`Loading ${file.name}…`);
+  const ext=file.name.split('.').pop().toLowerCase();
+  const buf=await file.arrayBuffer();
+  let result;
+  if(ext==='obj'){
+    const text=new TextDecoder().decode(buf);
+    const obj=new OBJLoader().parse(text);
+    result=flattenObject(obj);
+  }else if(ext==='stl'){
+    let g=new STLLoader().parse(buf); g=ensureIndexed(g);
+    result={geometry:g,groups:groupsFromGeometry(g,['STL Mesh'])};
+  }else if(ext==='glb' || ext==='gltf'){
+    const gltf=await new Promise((resolve,reject)=>new GLTFLoader().parse(
+      ext==='gltf'?new TextDecoder().decode(buf):buf,'',resolve,reject));
+    result=flattenObject(gltf.scene);
+  }else throw new Error('Unsupported file type');
+  setupGeometry(result.geometry,result.groups,file.name);
+}
+
+function makeDemo(){
+  const body=new THREE.BoxGeometry(2.4,1.2,1.6,4,2,3);
+  body.translate(0,.15,0);
+  const cap=new THREE.SphereGeometry(.85,20,12,0,Math.PI*2,0,Math.PI/2);
+  cap.scale(1.25,.65,1.0); cap.translate(0,.78,0);
+  const g=mergeGeometries([ensureIndexed(body),ensureIndexed(cap)],false);
+  const t1=body.index.count/3, t2=cap.index.count/3;
+  setupGeometry(g,[defaultGroup(0,'Hard body',0,t1),defaultGroup(1,'Smooth canopy',t1,t2)],'Demo grouped mesh');
+  state.groups[0].mode='flat'; state.groups[1].mode='smooth';
+  rebuild();
+}
+
+function setupGeometry(g,groups,name){
+  clearMesh();
+  g=ensureIndexed(g);
+  state.weldedBefore=g.getAttribute('position').count;
+  g=weldGeometry(g,state.weldTolerance);
+  state.weldedAfter=g.getAttribute('position').count;
+  g.deleteAttribute('normal');
+  state.baseGeometry=g;
+  state.groups=groups;
+  const triCount=g.index.count/3;
+  state.triGroups=new Int32Array(triCount); state.triGroups.fill(0);
+  for(let gi=0;gi<groups.length;gi++){
+    const gr=groups[gi];
+    for(let t=gr.start;t<Math.min(triCount,gr.start+gr.count);t++) state.triGroups[t]=gi;
+  }
+  state.sourceName=name; state.selected=groups.length?0:-1; state.isolated=-1;
+  rebuild(); frameMesh(); updateUI();
+  status(`Loaded ${name}`);
+}
+
+function keyPos(v){return `${Math.round(v.x*1e6)},${Math.round(v.y*1e6)},${Math.round(v.z*1e6)}`}
+function edgeKey(a,b){return a<b?`${a}|${b}`:`${b}|${a}`}
+
+function rebuild(){
+  if(!state.baseGeometry) return;
+  status('Rebuilding normals…');
+  const src=state.baseGeometry;
+  const pos=src.getAttribute('position'), idx=src.index.array;
+  const triCount=idx.length/3;
+  const faceNormals=new Array(triCount), faceVerts=new Array(triCount);
+  for(let t=0;t<triCount;t++){
+    const a=idx[t*3],b=idx[t*3+1],c=idx[t*3+2];
+    const va=new THREE.Vector3().fromBufferAttribute(pos,a), vb=new THREE.Vector3().fromBufferAttribute(pos,b), vc=new THREE.Vector3().fromBufferAttribute(pos,c);
+    faceNormals[t]=vb.clone().sub(va).cross(vc.clone().sub(va)).normalize();
+    faceVerts[t]=[a,b,c];
+  }
+  const edgeMap=new Map();
+  for(let t=0;t<triCount;t++){
+    const v=faceVerts[t];
+    for(const [a,b] of [[v[0],v[1]],[v[1],v[2]],[v[2],v[0]]]){
+      const k=edgeKey(a,b); if(!edgeMap.has(k)) edgeMap.set(k,[]);
+      edgeMap.get(k).push(t);
+    }
+  }
+  const smoothAdj=Array.from({length:triCount},()=>[]);
+  let hardEdges=0;
+  for(const [k,faces] of edgeMap){
+    if(faces.length!==2){hardEdges++;continue}
+    const [a,b]=faces, ga=state.groups[state.triGroups[a]], gb=state.groups[state.triGroups[b]];
+    let smooth=false;
+    if(ga && gb && ga.visible && gb.visible){
+      const same=state.triGroups[a]===state.triGroups[b];
+      if((same || !$('globalHard').checked) && !(same?false:(ga.hardBoundary||gb.hardBoundary))){
+        if(ga.mode!=='flat' && gb.mode!=='flat'){
+          const angle=THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(faceNormals[a].dot(faceNormals[b]),-1,1)));
+          const lim=Math.min(ga.mode==='auto'?ga.angle:180,gb.mode==='auto'?gb.angle:180);
+          smooth=angle<=lim;
+        }
+      }else if(same && ga.mode!=='flat'){
+        const angle=THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(faceNormals[a].dot(faceNormals[b]),-1,1)));
+        smooth=ga.mode==='smooth'||angle<=ga.angle;
+      }
+    }
+    if(smooth){smoothAdj[a].push(b);smoothAdj[b].push(a)} else hardEdges++;
+  }
+  state.hardEdges=hardEdges;
+
+  // Per-corner smoothing islands: average incident face normals connected through smooth edges and sharing a vertex.
+  const outPos=[],outNorm=[],outColor=[],outIndex=[];
+  const sourceColor=src.getAttribute('color');
+  const gr
