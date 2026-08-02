@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>FaceGroup Smooth — Mesh Smoothing Editor</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+<header>
+  <div class="brand"><div class="logo">FG</div><span>FaceGroup Smooth</span></div>
+  <button id="openBtn">Open mesh</button>
+  <button id="demoBtn">Demo mesh</button>
+  <button id="saveProjectBtn" disabled>Save project</button>
+  <button id="loadProjectBtn">Load project</button>
+  <div class="spacer"></div>
+  <button id="frameBtn" disabled>Frame</button>
+  <button id="exportObjBtn" class="primary" disabled>Export OBJ</button>
+  <button id="exportGlbBtn" class="primary" disabled>Export GLB</button>
+  <button id="panelBtn">Groups</button>
+  <button id="aboutBtn">About</button>
+  <input id="fileInput" type="file" hidden accept=".obj,.stl,.gltf,.glb" />
+  <input id="projectInput" type="file" hidden accept=".fgs,.json" />
+</header>
+<main>
+<aside class="side left">
+  <div class="section"><h3>Import</h3><div id="drop" class="drop"><strong>Drop a 3D mesh here</strong>OBJ, STL, GLTF or GLB</div><div class="hint">OBJ material/group regions and GLTF primitive groups are imported as facegroups. STL files begin as one group.</div></div>
+  <div class="section"><h3>Display</h3><label class="check"><input id="wire" type="checkbox"> Wireframe overlay</label><label class="check"><input id="edges" type="checkbox" checked> Hard-edge overlay</label><label class="check"><input id="groupsColor" type="checkbox"> Facegroup colours</label><label class="check"><input id="grid" type="checkbox" checked> Ground grid</label><div class="row"><label>Environment</label><input id="env" type="range" min="0" max="2" step=".05" value=".75"></div><div class="row"><label>Exposure</label><input id="exposure" type="range" min=".2" max="2" step=".05" value="1"></div></div>
+  <div class="section"><h3>Mesh</h3><div class="statgrid"><div class="stat"><b id="verts">0</b><span>Vertices</span></div><div class="stat"><b id="faces">0</b><span>Triangles</span></div><div class="stat"><b id="groupCount">0</b><span>Facegroups</span></div><div class="stat"><b id="hardCount">0</b><span>Hard edges</span></div></div><div class="row wrap"><button id="recenterBtn" disabled>Centre origin</button><button id="flipBtn" disabled>Flip normals</button></div></div>
+  <div class="section"><h3>Navigation</h3><div class="hint">Orbit: one finger / left mouse<br>Pan: two fingers / right mouse<br>Zoom: pinch / wheel<br>Select a face: double-click</div></div>
+</aside>
+<section id="viewport"><div class="overlay"><div class="pill" id="meshName">No mesh loaded</div><div class="pill" id="selectionPill">No group selected</div></div></section>
+<aside class="side right" id="rightPanel">
+  <div class="section"><h3>Facegroups</h3><div class="row"><button id="allSmooth" disabled>All smooth</button><button id="allFlat" disabled>All flat</button><button id="allAuto" disabled>All auto</button></div><div id="groupList" class="groups"><div class="empty">Load a mesh to inspect its facegroups.</div></div></div>
+  <div class="section" id="editor" style="display:none"><h3>Selected group</h3><div class="row"><label>Name</label><input id="gName" type="text"></div><div class="row"><label>Colour</label><input id="gColor" type="color"><span id="gIndex"></span></div><div class="row"><label>Smoothing</label><select id="gMode"><option value="smooth">Smooth</option><option value="flat">Flat / no smoothing</option><option value="auto">Auto by angle</option></select></div><div id="angleRow" class="row"><label>Angle</label><input id="gAngle" type="range" min="1" max="180" step="1" value="45"><span id="angleOut">45°</span></div><label class="check"><input id="hardBoundary" type="checkbox" checked> Hard boundary around group</label><label class="check"><input id="visibleGroup" type="checkbox" checked> Visible</label><div class="row wrap"><button id="isolateBtn">Isolate</button><button id="showAllBtn">Show all</button><button id="mergeNextBtn">Merge into previous</button></div><div class="hint">Smooth averages normals within the group. Flat keeps each triangle faceted. Auto smooths only across edges below the chosen angle.</div></div>
+  <div class="section"><h3>Boundary policy</h3><label class="check"><input id="globalHard" type="checkbox" checked> Different groups create hard edges</label><label class="check"><input id="preserveMaterials" type="checkbox" checked> Preserve group materials on export</label><div class="row"><button id="applyBtn" class="primary" disabled>Rebuild shading</button></div></div>
+</aside>
+</main>
+<footer><div id="status">Ready</div><div>FaceGroup Smooth v1.0.1</div></footer>
+</div>
+<div class="modal" id="aboutModal"><div class="dialog"><h2>FaceGroup Smooth</h2><p>A browser-based mesh utility for assigning smooth, flat or angle-based shading to facegroups without changing the visible geometry.</p><ul><li><b>Smooth:</b> averages normals across connected faces within a group.</li><li><b>Flat:</b> assigns an independent normal to each triangle.</li><li><b>Auto:</b> smooths across edges only when the face angle is under the group threshold.</li><li><b>Hard boundary:</b> prevents normal averaging across the group border.</li></ul><p>Exports OBJ with explicit normals and GLB with the rebuilt vertex normals.</p><button id="closeAbout">Close</button></div></div>
+<script>window.__FGS_READY__=false;window.addEventListener('error',function(e){const st=document.getElementById('status');if(st)st.textContent='Startup error: '+(e.message||'JavaScript could not load')});setTimeout(function(){if(!window.__FGS_READY__){const st=document.getElementById('status');if(st)st.textContent='App modules did not load. Refresh the page.'}},3500);</script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
